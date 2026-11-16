@@ -866,6 +866,32 @@ function assert_single_admin_left(int $excludedId, string $action): void
  * Admin: metadata edit + poster upload
  * ---------------------------------------------------------------------- */
 
+/**
+ * Normalise an incoming poster value: URL direct link, "" / null → clear,
+ * or a legacy local storage path. Returns the value to store.
+ */
+function poster_input_value(mixed $value): ?string
+{
+    if ($value === null) {
+        return null;
+    }
+
+    $value = trim((string) $value);
+
+    if ($value === '') {
+        return null;
+    }
+
+    if (preg_match('#^https?://#i', $value)) {
+        if (strlen($value) > 768) {
+            throw new ApiException('URL poster terlalu panjang (maks 768 karakter).', 422);
+        }
+        return $value;
+    }
+
+    throw new ApiException('Poster harus URL http/https yang valid.', 422);
+}
+
 function api_admin_update_movie(int $id): void
 {
     require_admin();
@@ -893,6 +919,10 @@ function api_admin_update_movie(int $id): void
     if (array_key_exists('overview', $input)) {
         $fields[] = 'overview = ?';
         $values[] = $input['overview'] !== null ? mb_substr(trim((string) $input['overview']), 0, 20000) : null;
+    }
+    if (array_key_exists('poster', $input)) {
+        $fields[] = 'poster = ?';
+        $values[] = poster_input_value($input['poster']);
     }
 
     if ($fields !== []) {
@@ -930,6 +960,10 @@ function api_admin_update_series(int $id): void
     if (array_key_exists('overview', $input)) {
         $fields[] = 'overview = ?';
         $values[] = $input['overview'] !== null ? mb_substr(trim((string) $input['overview']), 0, 20000) : null;
+    }
+    if (array_key_exists('poster', $input)) {
+        $fields[] = 'poster = ?';
+        $values[] = poster_input_value($input['poster']);
     }
 
     if ($fields !== []) {
@@ -1045,7 +1079,7 @@ function api_admin_delete_poster(string $type, int $id): void
         throw new ApiException('Item tidak ditemukan.', 404);
     }
 
-    if (!empty($row['poster'])) {
+    if (!empty($row['poster']) && !preg_match('#^https?://#i', (string) $row['poster'])) {
         $old = storage_path('covers/' . basename((string) $row['poster']));
         if (is_file($old)) {
             @unlink($old);

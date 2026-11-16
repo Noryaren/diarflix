@@ -783,25 +783,40 @@
             '<label>Judul<input name="title" value="' + esc(item.title) + '" required maxlength="255"></label>' +
             '<label>Tahun<input name="year" type="number" min="1900" max="2100" value="' + esc(item.year || '') + '"></label>' +
             '<label>Genre<input name="genres" value="' + esc(item.genres || '') + '" placeholder="Aksi, Drama"></label>' +
-            '<label class="full">Deskripsi<textarea name="overview" rows="4">' + esc(item.overview || '') + '</textarea></label>' +
+            '<label class="full">Deskripsi<textarea name="overview" rows="5">' + esc(item.overview || '') + '</textarea></label>' +
+            '<label class="full">Poster (direct link gambar, mis. dari drive)<input name="poster" type="url" value="' +
+            esc(isAbsoluteUrl(item.poster) ? item.poster : '') +
+            '" placeholder="https://drive.diaraji.my.id/share/…" inputmode="url"></label>' +
             '<div class="full form-actions">' +
             '<button class="btn btn-primary" type="submit">Simpan</button>' +
-            '</div></form>' +
-            '<div class="poster-manager">' +
-            '<h3>Poster</h3>' +
-            '<div class="poster-preview">' + posterHtml(item) + '</div>' +
-            '<form id="poster-form">' +
-            '<input type="file" name="poster" accept="image/*" required>' +
-            '<button class="btn btn-ghost" type="submit">Upload poster</button>' +
             (item.poster ? '<button class="btn btn-danger" type="button" id="poster-del">Hapus poster</button>' : '') +
+            '</div>' +
+            '<div class="full poster-preview" id="poster-preview">' + posterHtml(item) + '</div>' +
             '</form>' +
-            '<p class="muted">Poster opsional — tanpa poster, kartu pakai inisial judul.</p>' +
-            '</div></section>';
+            '<p class="muted">Kosongkan field poster untuk memakai poster dari folder media / inisial judul.</p>' +
+            '</section>';
+    }
+
+    function isAbsoluteUrl(s) {
+        return /^https?:\/\//i.test(String(s || ''));
     }
 
     function bindAdminMeta(type, id) {
         var form = qs('#meta-form');
         if (form) {
+            // Live preview saat mengetik URL poster.
+            var posterInput = qs('input[name=poster]', form);
+            if (posterInput) {
+                posterInput.addEventListener('input', function () {
+                    var box = qs('#poster-preview');
+                    if (!box) return;
+                    var v = posterInput.value.trim();
+                    box.innerHTML = isAbsoluteUrl(v)
+                        ? '<img class="poster-img" src="' + esc(v) + '" alt="">'
+                        : posterFallback(qs('input[name=title]', form).value || '?');
+                });
+            }
+
             form.addEventListener('submit', function (ev) {
                 ev.preventDefault();
                 var fd = new FormData(form);
@@ -809,22 +824,11 @@
                     title: fd.get('title'),
                     year: fd.get('year') || null,
                     genres: fd.get('genres'),
-                    overview: fd.get('overview')
+                    overview: fd.get('overview'),
+                    poster: String(fd.get('poster') || '').trim()
                 };
                 api('/admin/' + type + '/' + id, { method: 'PATCH', body: body })
-                    .then(function () { toast('Metadata tersimpan'); route(); })
-                    .catch(function (e) { toast(e.message, true); });
-            });
-        }
-
-        var posterForm = qs('#poster-form');
-        if (posterForm) {
-            posterForm.addEventListener('submit', function (ev) {
-                ev.preventDefault();
-                var fd = new FormData(posterForm);
-                if (!fd.get('poster')) return;
-                api('/admin/' + type + '/' + id + '/poster', { method: 'POST', body: fd })
-                    .then(function () { toast('Poster terupload'); route(); })
+                    .then(function () { toast('Tersimpan'); route(); })
                     .catch(function (e) { toast(e.message, true); });
             });
         }

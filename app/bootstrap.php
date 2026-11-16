@@ -28,7 +28,8 @@ if (!headers_sent()) {
     header('Cross-Origin-Resource-Policy: same-origin');
     header(
         "Content-Security-Policy: default-src 'self'; "
-        . "img-src 'self' data: blob:; "
+        // img-src https: — poster boleh direct link dari domain lain (drive.diaraji.my.id dsb).
+        . "img-src 'self' data: blob: https:; "
         . "media-src 'self' blob:; "
         . "style-src 'self' 'unsafe-inline'; "
         . "script-src 'self' 'nonce-{$nonce}'; "

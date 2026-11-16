@@ -164,10 +164,14 @@ function episode_stream_url(int $episodeId): string
     return with_media_token(url('/stream/e/' . $episodeId));
 }
 
-function poster_url(?string $uploaded, ?string $folderPoster): string
+function poster_url(?string $poster, ?string $folderPoster): string
 {
-    if ($uploaded !== null && $uploaded !== '') {
-        return with_media_token(url('/poster/up/' . rawurlencode(basename($uploaded))));
+    if ($poster !== null && $poster !== '') {
+        // Direct link (mis. https://drive.diaraji.my.id/share/...) dipakai apa adanya.
+        if (preg_match('#^https?://#i', $poster)) {
+            return $poster;
+        }
+        return with_media_token(url('/poster/up/' . rawurlencode(basename($poster))));
     }
     if ($folderPoster !== null && $folderPoster !== '') {
         return with_media_token(url('/poster/f/' . rawurlencode(hash('sha1', $folderPoster)) . '.jpg'));
