@@ -371,17 +371,19 @@ function parse_episode_title(string $path, int $seasonNo, int $epNo): string
 {
     $base = pathinfo($path, PATHINFO_FILENAME);
 
-    if (preg_match('/S\d{1,2}[\s._-]*E\d{1,3}[\s._-]*(.+)$/i', $base, $m)) {
-        $title = $m[1];
+    // (?!\d) stops E01 from backtracking to E0 and leaving a stray "1" behind.
+    if (preg_match('/S\d{1,2}[\s._-]*E\d{1,3}(?!\d)/i', $base, $m, PREG_OFFSET_CAPTURE)) {
+        $after = substr($base, $m[0][1] + strlen($m[0][0]));
+        $title = preg_replace('/^[\s._-]+/', '', $after) ?? '';
         $title = str_replace(['.', '_'], ' ', $title);
         $title = preg_replace('/\s+/', ' ', $title) ?? $title;
-        $title = trim($title, " -._");
+        $title = trim($title, ' -._');
 
         $tokens = '1080p|720p|2160p|480p|4k|web-?dl|webrip|bluray|x264|x265|h264|h265|hevc|aac|dts';
         $title  = preg_replace('/\s+(' . $tokens . ')(\s+|$)/i', ' ', $title) ?? $title;
         $title  = trim($title);
 
-        if ($title !== '') {
+        if ($title !== '' && !preg_match('/^\d+$/', $title)) {
             return mb_substr($title, 0, 255);
         }
     }
