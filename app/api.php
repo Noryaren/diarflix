@@ -680,9 +680,9 @@ function api_admin_scan(): void
 
     $full = !empty(json_input()['full']);
 
-    $php   = PHP_BINARY;
+    $php    = php_cli_binary();
     $script = escapeshellarg(ROOT_PATH . '/bin/scan.php');
-    $flags = $full ? ' --full' : '';
+    $flags  = $full ? ' --full' : '';
 
     $cmd = escapeshellarg($php) . ' ' . $script . $flags . ' 2>&1';
 
@@ -695,6 +695,32 @@ function api_admin_scan(): void
         'code'   => $code,
         'output' => implode("\n", $output),
     ], $code === 0 ? 200 : 500);
+}
+
+/**
+ * Under php-fpm, PHP_BINARY points at php-fpm itself — find the CLI binary.
+ */
+function php_cli_binary(): string
+{
+    $configured = config('app.php_cli');
+    if (is_string($configured) && $configured !== '' && is_executable($configured)) {
+        return $configured;
+    }
+
+    $candidates = [
+        '/usr/bin/php' . PHP_MAJOR_VERSION . '.' . PHP_MINOR_VERSION,
+        '/usr/bin/php' . PHP_MAJOR_VERSION,
+        '/usr/bin/php',
+        PHP_BINARY,
+    ];
+
+    foreach ($candidates as $bin) {
+        if (is_executable($bin) && !str_contains(basename($bin), 'fpm')) {
+            return $bin;
+        }
+    }
+
+    return PHP_BINARY;
 }
 
 /* -------------------------------------------------------------------------
