@@ -1,0 +1,31 @@
+# Diarflix — contoh blok Caddy.
+# Jangan menimpa /etc/caddy/Caddyfile langsung; gabungkan dengan blok situs lain.
+#
+# Pola: Cloudflare Tunnel meneruskan HTTPS dari edge, Caddy melayani HTTP :80.
+
+http://movie.diaraji.my.id {
+	root * /home/diarflix/public
+	encode gzip zstd
+
+	# Cloudflare Zero Trust / Tunnel.
+	header {
+		X-Forwarded-Proto "https"
+		X-Forwarded-For {http.request.remote.host}
+		CF-Connecting-IP {http.request.remote.host}
+	}
+
+	# Jangan eksekusi file runtime.
+	@blocked path /.*
+	respond @blocked 404
+
+	php_fastcgi unix//run/php/php8.5-fpm.sock {
+		dial_timeout 30s
+		resolve_root_symlink
+
+		env HTTPS on
+		header_up X-Forwarded-Proto {http.request.header.X-Forwarded-Proto}
+		header_up X-Forwarded-For {http.request.header.X-Forwarded-For}
+	}
+
+	file_server
+}

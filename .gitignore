@@ -1,0 +1,6 @@
+config/config.php
+storage/jwt.secret
+storage/covers/*
+!storage/covers/.gitkeep
+*.log
+.DS_Store
