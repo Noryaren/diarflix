@@ -874,10 +874,14 @@
                 '</div>' +
                 '<div class="scan-box">' +
                 '<h2>Scan library</h2>' +
-                '<p class="muted">Baca ulang folder <code>/diarflix/movie</code> dan <code>/diarflix/series</code>. File baru masuk, yang hilang dihapus dari DB. Poster &amp; deskripsi yang kamu edit tidak disentuh scan.</p>' +
+                '<p class="muted">Baca ulang folder <code>/diarflix/movie</code> dan <code>/diarflix/series</code>. File baru masuk, yang hilang dihapus dari DB. Poster &amp; deskripsi yang kamu edit tidak disentuh scan. Video x265/HEVC yang tidak didukung browser masuk antrean convert — jalankan lewat tombol di bawah.</p>' +
                 '<div class="form-actions">' +
                 '<button class="btn btn-primary" id="scan-btn">Scan sekarang</button>' +
                 '<label class="chk"><input type="checkbox" id="scan-full"> Full (baca ulang semua)</label>' +
+                '</div>' +
+                '<div class="form-actions">' +
+                '<button class="btn" id="transcode-btn">Convert x265 → 480p</button>' +
+                '<span class="muted" id="transcode-status"></span>' +
                 '</div>' +
                 '<pre class="scan-log" id="scan-log" hidden></pre>' +
                 '</div></section>' +
@@ -941,6 +945,79 @@
                         toast('Scan gagal', true);
                     })
                     .then(function () { scanBtn.disabled = false; });
+            });
+        }
+
+        var tcBtn = qs('#transcode-btn');
+        var tcTimer = null;
+
+        function fmtDurSec(s) {
+            var h = Math.floor(s / 3600);
+            var m = Math.round((s % 3600) / 60);
+            return h > 0 ? h + ' jam ' + m + ' mnt' : m + ' mnt';
+        }
+
+        function showTc(data) {
+            var st = qs('#transcode-status');
+            if (!st) return;
+            if (data.error) {
+                st.textContent = data.error;
+                return;
+            }
+            if (data.running) {
+                var p = data.progress || {};
+                var txt;
+                if (p.current && p.percent !== null && p.percent !== undefined) {
+                    txt = p.current + ' — ' + p.percent + '%';
+                    if (p.fps) txt += ' · ' + p.fps + ' fps';
+                    if (p.eta_seconds) txt += ' · sisa ' + fmtDurSec(p.eta_seconds);
+                } else {
+                    txt = 'Convert berjalan…';
+                }
+                if (data.queued > 1) txt += ' · antrean ' + data.queued + ' file';
+                st.textContent = txt + ' (klik untuk refresh)';
+                tcPoll();
+                return;
+            }
+            if (data.spawned) {
+                st.textContent = 'Convert dijalankan (' + data.queued + ' file, satu per satu)';
+                tcPoll();
+                return;
+            }
+            st.textContent = data.queued > 0
+                ? data.queued + ' file HEVC menunggu — klik untuk mulai'
+                : 'Tidak ada file HEVC dalam antrean';
+        }
+
+        function tcPoll() {
+            if (tcTimer) return;
+            tcTimer = setTimeout(function () {
+                tcTimer = null;
+                if (!qs('#transcode-btn')) return;
+                api('/admin/transcode', { method: 'POST', body: {} })
+                    .then(showTc)
+                    .catch(function () {});
+            }, 20000);
+        }
+
+        if (tcBtn) {
+            tcBtn.addEventListener('click', function () {
+                var st = qs('#transcode-status');
+                tcBtn.disabled = true;
+                st.textContent = 'Memeriksa antrean…';
+                api('/admin/transcode', { method: 'POST', body: {} })
+                    .then(function (data) {
+                        showTc(data);
+                        if (data.error) toast(data.error, true);
+                        else if (data.spawned) toast('Convert dijalankan');
+                        else if (data.running) toast('Convert sedang berjalan');
+                        else toast(data.queued > 0 ? data.queued + ' file dalam antrean' : 'Tidak ada yang perlu di-convert');
+                    })
+                    .catch(function (e) {
+                        st.textContent = e.message;
+                        toast('Convert gagal', true);
+                    })
+                    .then(function () { tcBtn.disabled = false; });
             });
         }
 

@@ -2,6 +2,8 @@ config/config.php
 storage/jwt.secret
 storage/covers/*
 !storage/covers/.gitkeep
+storage/encode/*
+storage/subtitles/*
 *.log
 .DS_Store
 

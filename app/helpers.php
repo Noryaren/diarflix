@@ -26,6 +26,8 @@ function config(?string $key = null, mixed $default = null): mixed
                 'video_extensions'    => ['mp4', 'mkv', 'webm', 'm4v', 'mov', 'avi', 'ts'],
                 'subtitle_extensions' => ['srt', 'vtt'],
                 'folder_posters'      => ['poster.jpg', 'poster.png', 'cover.jpg', 'cover.png', 'folder.jpg', 'front.jpg', 'movie.jpg'],
+                'unsupported_codecs'  => ['hevc'],
+                'transcode_max_width' => 854,
             ],
         ];
 
@@ -152,6 +154,34 @@ function subtitle_extensions(): array
 {
     $ext = config('media.subtitle_extensions');
     return is_array($ext) ? array_map('strtolower', $ext) : [];
+}
+
+/**
+ * Subtitle hasil ekstraksi disimpan di storage, bukan sefolder video: folder
+ * hasil upload SFTP sering berakhir dengan permission yang tidak mengizinkan
+ * user web menulis ke dalamnya.
+ */
+function extracted_subtitles_dir(): string
+{
+    return storage_path('subtitles');
+}
+
+function extracted_subtitles_key(string $videoPath): string
+{
+    $real = realpath($videoPath) ?: $videoPath;
+    return substr(sha1($real), 0, 16);
+}
+
+function purge_extracted_subtitles(string $videoPath): void
+{
+    $key  = extracted_subtitles_key($videoPath) . '.';
+    $dir  = extracted_subtitles_dir();
+
+    foreach (@scandir($dir) ?: [] as $entry) {
+        if (str_starts_with($entry, $key)) {
+            @unlink($dir . '/' . $entry);
+        }
+    }
 }
 
 function movie_stream_url(int $movieId): string

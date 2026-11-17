@@ -5,6 +5,8 @@ declare(strict_types=1);
  * JSON API used by the single-page player.
  */
 
+require_once __DIR__ . '/transcode.php';
+
 function json_response(mixed $data, int $status = 200): never
 {
     http_response_code($status);
@@ -697,6 +699,35 @@ function api_admin_scan(): void
     ], $code === 0 ? 200 : 500);
 }
 
+/* -------------------------------------------------------------------------
+ * Admin: convert video HEVC → H.264 480p (antrean dari scan)
+ * ---------------------------------------------------------------------- */
+
+function api_admin_transcode(): void
+{
+    require_admin();
+
+    $queued  = transcode_queued_count();
+    $running = transcode_worker_running();
+    $spawned = false;
+    $error   = null;
+
+    if ($queued > 0 && !$running && !transcode_ffmpeg_available()) {
+        $error = 'ffmpeg tidak tersedia di server.';
+    } elseif ($queued > 0 && !$running) {
+        $spawned = transcode_spawn_worker();
+    }
+
+    json_response([
+        'ok'       => $error === null,
+        'queued'   => $queued,
+        'running'  => $running || $spawned,
+        'spawned'  => $spawned,
+        'error'    => $error,
+        'progress' => transcode_progress(),
+    ], $error === null ? 200 : 500);
+}
+
 /**
  * Under php-fpm, PHP_BINARY points at php-fpm itself — find the CLI binary.
  */
@@ -1166,6 +1197,10 @@ function api_dispatch(string $method, string $path): void
 
         if ($method === 'POST' && $path === '/admin/scan') {
             api_admin_scan();
+        }
+
+        if ($method === 'POST' && $path === '/admin/transcode') {
+            api_admin_transcode();
         }
 
         if ($method === 'GET' && $path === '/admin/users') {
