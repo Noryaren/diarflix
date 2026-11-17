@@ -221,8 +221,15 @@ function scan_series(array &$stats, ?callable $progress): void
                     continue;
                 }
             } else {
-                $stats['warnings'][] = $entry . '/' . $rel . ': pola SxxEyy tidak ditemukan, dilewati';
-                continue;
+                // Fallback: "Show - 01.mkv" / "Show - 25 END.mkv" without season info -> Season 1.
+                $base = pathinfo($path, PATHINFO_FILENAME);
+                if (preg_match('/[\s._-]+(\d{1,3})(?:\s*(?:END|FINAL|OVA|SP))?(?:\s*(?:\[.*\]|\(.*\)))?\s*$/i', $base, $m2)) {
+                    $seasonNo = 1;
+                    $epNo     = (int) $m2[1];
+                } else {
+                    $stats['warnings'][] = $entry . '/' . $rel . ': pola SxxEyy tidak ditemukan, dilewati';
+                    continue;
+                }
             }
 
             $epTitle = parse_episode_title($path, $seasonNo, $epNo);
@@ -551,7 +558,7 @@ function parse_title_year(string $name): array
 }
 
 /**
- * "Show.S01E02.The.Pilot.1080p.mkv" → "The Pilot"
+ * "Show.S01E02.The.Pilot.1080p.mkv"  "The Pilot"
  */
 function parse_episode_title(string $path, int $seasonNo, int $epNo): string
 {
@@ -569,6 +576,16 @@ function parse_episode_title(string $path, int $seasonNo, int $epNo): string
         $title  = preg_replace('/\s+(' . $tokens . ')(\s+|$)/i', ' ', $title) ?? $title;
         $title  = trim($title);
 
+        if ($title !== '' && !preg_match('/^\d+$/', $title)) {
+            return mb_substr($title, 0, 255);
+        }
+    }
+
+    // Fallback for "Show - 01 [Tag]" style names: title sits before the episode number.
+    if (preg_match('/^(.*?)[\s._-]+(\d{1,3})(?:\s*(?:END|FINAL|OVA|SP))?(?:\s*(?:\[.*\]|\(.*\)))?\s*$/i', $base, $m)) {
+        $title = preg_replace('/^\[.*?\]\s*/', '', $m[1]) ?? $m[1];
+        $title = str_replace(['.', '_'], ' ', $title);
+        $title = trim(preg_replace('/\s+/', ' ', $title) ?? $title, ' -._');
         if ($title !== '' && !preg_match('/^\d+$/', $title)) {
             return mb_substr($title, 0, 255);
         }
