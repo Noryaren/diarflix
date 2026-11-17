@@ -149,9 +149,11 @@ function serve_video(string $path, string $label): void
  */
 function find_subtitles(string $videoPath): array
 {
-    $dir  = dirname($videoPath);
-    $base = pathinfo($videoPath, PATHINFO_FILENAME);
-    $exts = subtitle_extensions();
+    $dir   = dirname($videoPath);
+    $base  = pathinfo($videoPath, PATHINFO_FILENAME);
+    $exts  = subtitle_extensions();
+    $store = extracted_subtitles_dir();
+    $key   = extracted_subtitles_key($videoPath) . '.';
 
     $all = [];
     foreach (@scandir($dir) ?: [] as $entry) {
@@ -164,10 +166,6 @@ function find_subtitles(string $videoPath): array
         }
     }
 
-    if ($all === []) {
-        return [];
-    }
-
     $matched = [];
     foreach ($all as $path) {
         $name = pathinfo($path, PATHINFO_FILENAME);
@@ -176,7 +174,7 @@ function find_subtitles(string $videoPath): array
         }
     }
 
-    if ($matched === []) {
+    if ($matched === [] && $all !== []) {
         // Only fall back to "all subs in folder" when the folder holds one video.
         $videoExt   = video_extensions();
         $videoCount = 0;
@@ -191,11 +189,49 @@ function find_subtitles(string $videoPath): array
         }
     }
 
+    // Hasil ekstraksi disimpan di storage/subtitles/<key>.<nama>.srt.
+    foreach (@scandir($store) ?: [] as $entry) {
+        if ($entry === '.' || $entry === '..' || !str_starts_with($entry, $key)) {
+            continue;
+        }
+        if (!in_array(strtolower(pathinfo($entry, PATHINFO_EXTENSION)), $exts, true)) {
+            continue;
+        }
+        $name = substr(pathinfo($entry, PATHINFO_FILENAME), strlen($key));
+        if ($name === $base || str_starts_with($name, $base . '.')) {
+            $matched[] = $store . '/' . $entry;
+        }
+    }
+
+    if ($matched === []) {
+        return [];
+    }
+
+    // Nama yang sama bisa muncul di dua tempat (srt lama di folder video dan
+    // ekstraksi baru di storage) — tampilkan yang paling baru saja.
+    $newest = [];
+    foreach ($matched as $path) {
+        $name = pathinfo($path, PATHINFO_FILENAME);
+        if (str_starts_with($name, $key)) {
+            $name = substr($name, strlen($key));
+        }
+        $mtime = (int) @filemtime($path);
+        if (!isset($newest[$name]) || $mtime > $newest[$name][1]) {
+            $newest[$name] = [$path, $mtime];
+        }
+    }
+    $matched = array_column($newest, 0);
+
     sort($matched);
 
     $out = [];
     foreach ($matched as $path) {
-        $name  = pathinfo($path, PATHINFO_FILENAME);
+        $file = basename($path);
+        if (str_starts_with($file, $key)) {
+            $file = substr($file, strlen($key)); // buang prefix hash storage
+        }
+
+        $name  = pathinfo($file, PATHINFO_FILENAME);
         $lang  = 'id';
         $label = 'Subtitle';
 
@@ -204,11 +240,11 @@ function find_subtitles(string $videoPath): array
             $suffix = trim(substr($suffix, strlen($base)), '.');
         }
 
-        if ($suffix !== '' && preg_match('/^[a-z]{2}(-[a-z]{2})?$/i', $suffix, $m)) {
+        if ($suffix !== '' && preg_match('/^[a-z]{2,3}(-[a-z]{2})?$/i', $suffix, $m)) {
             $lang  = strtolower(str_replace('_', '-', $m[0]));
-            $label = strtoupper($lang) . ' — ' . basename($path);
+            $label = strtoupper($lang) . ' — ' . $file;
         } else {
-            $label = basename($path);
+            $label = $file;
         }
 
         $out[] = ['path' => $path, 'label' => $label, 'lang' => $lang];

@@ -8,6 +8,8 @@ declare(strict_types=1);
  * Series : /diarflix/series/Judul/Season 1/Judul.S01E01.mkv  (SxxEyy required)
  */
 
+require_once __DIR__ . '/transcode.php';
+
 function scan_library(bool $full = false, ?callable $progress = null): array
 {
     $stats = [
@@ -92,12 +94,20 @@ function scan_movies(array &$stats, ?callable $progress): void
             }
 
             $folderPoster = find_folder_poster($full);
+            $before       = $stats['movies_added'] + $stats['movies_updated'];
             upsert_movie($video, $title, $year, $folderPoster, $stats);
+            $changed = ($stats['movies_added'] + $stats['movies_updated']) > $before;
+            transcode_scan_check($video, 'movie', $entry, $changed, $stats);
+            extract_embedded_subtitles($video, $stats, $changed);
         } elseif (is_file($full) && in_array(strtolower(pathinfo($entry, PATHINFO_EXTENSION)), $videoExt, true)) {
             [$title, $year] = parse_title_year(pathinfo($entry, PATHINFO_FILENAME));
             $seen[]         = $full;
             $stats['movies_seen']++;
+            $before = $stats['movies_added'] + $stats['movies_updated'];
             upsert_movie($full, $title, $year, null, $stats);
+            $changed = ($stats['movies_added'] + $stats['movies_updated']) > $before;
+            transcode_scan_check($full, 'movie', $entry, $changed, $stats);
+            extract_embedded_subtitles($full, $stats, $changed);
         }
 
         if ($progress !== null && ($stats['movies_seen'] % 25) === 0) {
@@ -191,15 +201,25 @@ function scan_series(array &$stats, ?callable $progress): void
             }
 
             $path = $fileInfo->getPathname();
-            $rel  = ltrim(substr($path, strlen($showDir)), '/');
+            $rel  = str_replace('\\', '/', ltrim(substr($path, strlen($showDir)), '/'));
 
             if (preg_match('/S(\d{1,2})[\s._-]*E(\d{1,3})/i', $rel, $m)) {
                 $seasonNo = (int) $m[1];
                 $epNo     = (int) $m[2];
-            } elseif (preg_match('#(?:^|/)(?:Season|S)\s?(\d{1,2})(?:/|$)#i', $rel, $m)
-                && preg_match('/(?:^|[\s._-])(?:E|EP|Episode)[\s._-]?(\d{1,3})(?=[\s._-]|$)/i', basename($path), $m2)) {
+            } elseif (preg_match('#(?:^|/)(?:Season|S)\s?(\d{1,2})(?:/|$)#i', $rel, $m)) {
+                // Season folder gives the season; the filename must carry the
+                // episode number as "E02"/"EP2"/"Episode 3" or a bare "02".
                 $seasonNo = (int) $m[1];
-                $epNo     = (int) $m[2];
+                $base     = pathinfo($path, PATHINFO_FILENAME);
+
+                if (preg_match('/(?:^|[\s._-])(?:E|EP|Episode)[\s._-]?(\d{1,3})(?=[\s._-]|$)/i', $base, $m2)) {
+                    $epNo = (int) $m2[1];
+                } elseif (preg_match('/^(\d{1,3})(?:$|[\s._-])/', $base, $m2)) {
+                    $epNo = (int) $m2[1];
+                } else {
+                    $stats['warnings'][] = $entry . '/' . $rel . ': nomor episode tidak ditemukan, dilewati';
+                    continue;
+                }
             } else {
                 $stats['warnings'][] = $entry . '/' . $rel . ': pola SxxEyy tidak ditemukan, dilewati';
                 continue;
@@ -207,7 +227,11 @@ function scan_series(array &$stats, ?callable $progress): void
 
             $epTitle = parse_episode_title($path, $seasonNo, $epNo);
             $seen[]  = $path;
+            $before  = $stats['episodes_added'] + $stats['episodes_updated'];
             upsert_episode($seriesId, $seasonNo, $epNo, $epTitle, $path, $stats);
+            $changed = ($stats['episodes_added'] + $stats['episodes_updated']) > $before;
+            transcode_scan_check($path, 'episode', $entry . '/' . $rel, $changed, $stats);
+            extract_embedded_subtitles($path, $stats, $changed);
 
             if ($progress !== null && (count($seen) % 50) === 0) {
                 $progress($stats);
@@ -280,6 +304,167 @@ function upsert_episode(int $seriesId, int $seasonNo, int $epNo, string $epTitle
     $stats['episodes_added']++;
 }
 
+/**
+ * Export embedded MKV subtitle tracks as sidecar SRT files. The browser's
+ * <video> element cannot read softsubs inside the container, only external
+ * tracks.
+ *
+ * Dipanggil setiap scan (bukan hanya saat file berubah) supaya ekstraksi yang
+ * gagal — misalnya file masih diunggah — otomatis dicoba lagi pada scan
+ * berikutnya. Berhenti lebih dulu kalau ffmpeg/ffprobe tidak ada, file masih
+ * ditulis, atau sidecar sudah ada untuk video ini.
+ */
+function extract_embedded_subtitles(string $videoPath, array &$stats, bool $changed = false): void
+{
+    static $ffmpegReady = null;
+
+    if ($ffmpegReady === null) {
+        $ffmpegReady = trim((string) @shell_exec('command -v ffmpeg 2>/dev/null')) !== ''
+            && trim((string) @shell_exec('command -v ffprobe 2>/dev/null')) !== '';
+    }
+    if (!$ffmpegReady) {
+        return;
+    }
+
+    $dir        = dirname($videoPath);
+    $base       = pathinfo($videoPath, PATHINFO_FILENAME);
+    $videoMtime = (int) @filemtime($videoPath);
+    $store      = extracted_subtitles_dir();
+    $key        = extracted_subtitles_key($videoPath) . '.';
+
+    // Subtitle sudah tersedia kalau ada sidecar sefolder video atau hasil
+    // ekstraksi di storage. Yang dipakai hanya yang masih segar — srt lama
+    // yang lebih tua dari videonya (hasil ekstraksi dari file belum lengkap)
+    // dianggap basi supaya diekstrak ulang.
+    $hasSidecar = false;
+    $hasFresh   = false;
+
+    $consider = static function (string $path) use (&$hasSidecar, &$hasFresh, $videoMtime): void {
+        $hasSidecar = true;
+        if ($videoMtime <= 0 || (int) @filemtime($path) >= $videoMtime) {
+            $hasFresh = true;
+        }
+    };
+
+    foreach (@scandir($dir) ?: [] as $entry) {
+        if ($entry === '.' || $entry === '..') {
+            continue;
+        }
+        if (!in_array(strtolower(pathinfo($entry, PATHINFO_EXTENSION)), subtitle_extensions(), true)) {
+            continue;
+        }
+        $name = pathinfo($entry, PATHINFO_FILENAME);
+        if ($name === $base || str_starts_with($name, $base . '.')) {
+            $consider($dir . '/' . $entry);
+        }
+    }
+
+    if (!is_dir($store)) {
+        @mkdir($store, 0775, true);
+    }
+
+    foreach (@scandir($store) ?: [] as $entry) {
+        if ($entry === '.' || $entry === '..' || !str_starts_with($entry, $key)) {
+            continue;
+        }
+        if (!in_array(strtolower(pathinfo($entry, PATHINFO_EXTENSION)), subtitle_extensions(), true)) {
+            continue;
+        }
+        $name = substr(pathinfo($entry, PATHINFO_FILENAME), strlen($key));
+        if ($name === $base || str_starts_with($name, $base . '.')) {
+            $consider($store . '/' . $entry);
+        }
+    }
+
+    if ($hasSidecar && $hasFresh) {
+        return;
+    }
+
+    if (!is_dir($store)) {
+        $stats['warnings'][] = basename($videoPath)
+            . ': folder subtitle aplikasi tidak bisa dibuat (' . $store . ')';
+        return;
+    }
+
+    // Upload (scp/rsync) yang masih berjalan membuat file belum lengkap, dan
+    // ffmpeg akan gagal — atau menghasilkan .srt terpotong — di dalamnya.
+    // Tunda sampai file benar-benar selesai ditulis.
+    if ($videoMtime > 0 && (time() - $videoMtime) < 120) {
+        $stats['warnings'][] = basename($videoPath)
+            . ': file baru saja ditulis — ekstraksi subtitle ditunda, jalankan scan ulang sebentar lagi';
+        return;
+    }
+
+    $probe = (string) @shell_exec(
+        'ffprobe -v error -select_streams s -show_entries stream=index:stream_tags=language -of csv=p=0 '
+        . escapeshellarg($videoPath) . ' 2>/dev/null'
+    );
+
+    $lines = array_values(array_filter(explode("\n", trim($probe)), static fn ($l) => $l !== ''));
+
+    if ($lines === []) {
+        if ($changed) {
+            $stats['warnings'][] = basename($videoPath)
+                . ': tidak ada track subtitle embedded — taruh file .srt sefolder dengan video kalau ada';
+        }
+        return;
+    }
+
+    // Sidecar yang sudah basi boleh ditimpa; yang masih segar dibedakan namanya.
+    $fresh = static function (string $path) use ($videoMtime): bool {
+        return is_file($path) && ($videoMtime <= 0 || (int) @filemtime($path) >= $videoMtime);
+    };
+
+    $used = [];
+    foreach ($lines as $i => $line) {
+        $cols   = explode(',', $line);
+        $lang   = isset($cols[1]) && preg_match('/^[a-z]{2,3}(-[a-z]{2})?$/i', $cols[1])
+            ? strtolower($cols[1]) : '';
+        $suffix = $lang !== '' ? '.' . $lang : ($i > 0 ? '.sub' . $i : '');
+        $out    = $store . '/' . $key . $base . $suffix . '.srt';
+
+        // Beberapa track bisa ber-label bahasa yang sama (semuanya "ind"),
+        // jadi namanya dibedakan: .ind.srt, .ind2.srt, .ind3.srt …
+        if (isset($used[$out]) || $fresh($out)) {
+            $n   = 2;
+            $alt = $store . '/' . $key . $base . $suffix . $n . '.srt';
+            while (isset($used[$alt]) || $fresh($alt)) {
+                $n++;
+                $alt = $store . '/' . $key . $base . $suffix . $n . '.srt';
+            }
+            $out = $alt;
+        }
+        $used[$out] = true;
+
+        // Ekstrak ke file sementara dulu. ffmpeg bisa sukses menulis .srt
+        // parsial dari video yang belum selesai di-upload, dan kalau langsung
+        // jadi file final dia tidak akan pernah diekstrak ulang.
+        $tmp = $out . '.part';
+        @unlink($tmp);
+        $err = (string) @shell_exec(
+            'ffmpeg -y -v warning -i ' . escapeshellarg($videoPath)
+            . ' -map 0:s:' . $i . ' -c:s srt -f srt ' . escapeshellarg($tmp) . ' 2>&1 1>/dev/null'
+        );
+
+        $size = is_file($tmp) ? (int) @filesize($tmp) : 0;
+        $cut  = preg_match('/ended prematurely|file ended/i', $err) === 1;
+
+        if ($size === 0 || $cut) {
+            @unlink($tmp);
+            $stats['warnings'][] = basename($videoPath) . ($cut
+                ? ': file belum selesai di-upload (berakhir sebelum waktunya) — '
+                    . 'ekstraksi ditunda, jalankan scan ulang setelah upload selesai'
+                : ': track subtitle embedded gagal diekstrak');
+            if ($cut) {
+                return;
+            }
+            continue;
+        }
+
+        @rename($tmp, $out);
+    }
+}
+
 function season_id(int $seriesId, int $seasonNo): int
 {
     $stmt = db()->prepare('SELECT id FROM seasons WHERE series_id = ? AND season_no = ? LIMIT 1');
@@ -309,6 +494,7 @@ function remove_missing(string $table, array $seenPaths, int &$removed): void
     foreach ($stmt as $row) {
         if (!isset($seen[$row['p']])) {
             db()->prepare("DELETE FROM {$table} WHERE id = ?")->execute([(int) $row['id']]);
+            purge_extracted_subtitles((string) $row['p']);
             $removed++;
         }
     }
