@@ -221,9 +221,9 @@ function scan_series(array &$stats, ?callable $progress): void
                     continue;
                 }
             } else {
-                // Fallback: "Show - 01.mkv" / "Show - 25 END.mkv" without season info -> Season 1.
+                // Fallback: "Show - 01.mkv" / "Show - 25 END.mkv" / "01.mkv" without season info -> Season 1.
                 $base = pathinfo($path, PATHINFO_FILENAME);
-                if (preg_match('/[\s._-]+(\d{1,3})(?:\s*(?:END|FINAL|OVA|SP))?(?:\s*(?:\[.*\]|\(.*\)))?\s*$/i', $base, $m2)) {
+                if (preg_match('/(?:^|[\s._-])(\d{1,3})(?:\s*(?:END|FINAL|OVA|SP))?(?:\s*(?:\[.*\]|\(.*\)))?\s*$/i', $base, $m2)) {
                     $seasonNo = 1;
                     $epNo     = (int) $m2[1];
                 } else {
