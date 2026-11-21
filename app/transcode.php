@@ -395,6 +395,21 @@ function transcode_progress(): array
         $fps   = (float) $m2[2][$i];
     }
 
+    $ffline = null;
+    if ($chunk !== '') {
+        $norm = str_replace("\r", "\n", $chunk);
+        if (preg_match_all('/^frame=.*$/m', $norm, $ml)) {
+            $ffline = trim($ml[0][array_key_last($ml[0])]);
+        }
+    }
+
+    $currentLabel = null;
+    if ($current !== null) {
+        $parts = preg_split('#[\\\\/]+#', $current);
+        $n = count($parts);
+        $currentLabel = $n >= 2 ? ($parts[$n - 2] . '/' . $parts[$n - 1]) : $parts[$n - 1];
+    }
+
     $total   = null;
     $percent = null;
     $eta     = null;
@@ -411,11 +426,12 @@ function transcode_progress(): array
     return [
         'running'     => $running,
         'queued'      => $queued,
-        'current'     => $current !== null ? basename($current) : null,
+        'current'     => $currentLabel,
         'frame'       => $frame,
         'fps'         => $fps,
         'total'       => $total,
         'percent'     => $percent,
         'eta_seconds' => $eta,
+        'ffmpeg_line' => $ffline,
     ];
 }

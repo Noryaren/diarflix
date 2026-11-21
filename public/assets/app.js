@@ -883,6 +883,7 @@
                 '<button class="btn" id="transcode-btn">Convert semua ke x264 480p</button>' +
                 '<span class="muted" id="transcode-status"></span>' +
                 '</div>' +
+                '<pre class="scan-log" id="transcode-log" hidden></pre>' +
                 '<pre class="scan-log" id="scan-log" hidden></pre>' +
                 '</div></section>' +
 
@@ -957,15 +958,51 @@
             return h > 0 ? h + ' jam ' + m + ' mnt' : m + ' mnt';
         }
 
+        function progressBar(pct, width) {
+            var filled = Math.round((pct / 100) * width);
+            if (filled > width) filled = width;
+            if (filled < 0) filled = 0;
+            var head = filled < width ? '>' : '=';
+            return '[' + Array(filled + 1).join('=') + (filled < width ? head : '') + Array(Math.max(0, width - filled) + 1).join(' ') + ']';
+        }
+
         function showTc(data) {
             var st = qs('#transcode-status');
+            var log = qs('#transcode-log');
             if (!st) return;
+
+            function writeLog(text) {
+                if (!log) return;
+                log.hidden = false;
+                log.textContent = text;
+            }
+
             if (data.error) {
                 st.textContent = data.error;
+                writeLog('ERROR: ' + data.error);
                 return;
             }
             if (data.running) {
                 var p = data.progress || {};
+                var lines = ['● CONVERT BERJALAN'];
+                if (p.current) lines.push('file   : ' + p.current);
+                if (p.percent !== null && p.percent !== undefined) {
+                    lines.push('progres: ' + progressBar(p.percent, 24) + ' ' + p.percent + '%');
+                }
+                var stats = [];
+                if (p.frame != null && p.total) stats.push('frame ' + p.frame + '/' + p.total);
+                else if (p.frame != null) stats.push('frame ' + p.frame);
+                if (p.fps) stats.push(p.fps + ' fps');
+                if (p.eta_seconds) stats.push('ETA ' + fmtDurSec(p.eta_seconds));
+                if (stats.length) lines.push('         ' + stats.join(' · '));
+                if (p.ffmpeg_line) {
+                    lines.push('');
+                    lines.push('$ ' + p.ffmpeg_line);
+                }
+                lines.push('');
+                lines.push('antrean: ' + data.queued + ' file');
+                writeLog(lines.join('\n'));
+
                 var txt;
                 if (p.current && p.percent !== null && p.percent !== undefined) {
                     txt = p.current + ' — ' + p.percent + '%';
@@ -976,20 +1013,24 @@
                 }
                 if (data.queued > 1) txt += ' · antrean ' + data.queued + ' file';
                 st.textContent = txt + ' (klik untuk refresh)';
-                tcPoll();
+                tcPoll(5000);
                 return;
             }
             if (data.spawned) {
                 st.textContent = 'Convert dijalankan (' + data.queued + ' file, satu per satu)';
-                tcPoll();
+                writeLog('● Convert dijalankan — memindai library...\nantrean: ' + data.queued + ' file');
+                tcPoll(5000);
                 return;
             }
             st.textContent = data.queued > 0
                 ? data.queued + ' file belum standar — klik untuk mulai'
                 : 'Antrean kosong — klik Convert untuk memindai library';
+            writeLog(data.queued > 0
+                ? ('○ Siap. ' + data.queued + ' file belum standar — klik Convert untuk mulai.')
+                : '○ Antrean kosong. Semua file sudah standar x264 480p (atau klik Convert untuk pindai ulang).');
         }
 
-        function tcPoll() {
+        function tcPoll(ms) {
             if (tcTimer) return;
             tcTimer = setTimeout(function () {
                 tcTimer = null;
@@ -997,7 +1038,7 @@
                 api('/admin/transcode', { method: 'POST', body: {} })
                     .then(showTc)
                     .catch(function () {});
-            }, 20000);
+            }, ms || 20000);
         }
 
         if (tcBtn) {
