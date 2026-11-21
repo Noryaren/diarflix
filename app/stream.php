@@ -322,14 +322,12 @@ function clean_subtitle_text(string $text): string
         }
 
         $textLines = array_slice($lines, $i);
+        // Gabungkan dulu supaya override ASS yang pecah antar baris ikut tertangkap
+        $joined = clean_subtitle_line(implode("\n", $textLines));
         $cleanLines = [];
-        foreach ($textLines as $tl) {
-            $tl = clean_subtitle_line($tl);
-            if ($tl === '') continue;
-            foreach (preg_split('/\n+/', $tl) ?: [] as $part) {
-                $part = trim($part);
-                if ($part !== '') $cleanLines[] = $part;
-            }
+        foreach (preg_split('/\n+/', $joined) ?: [] as $part) {
+            $part = trim($part);
+            if ($part !== '') $cleanLines[] = $part;
         }
 
         if ($cleanLines === []) {
