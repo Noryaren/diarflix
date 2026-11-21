@@ -2,12 +2,13 @@
 declare(strict_types=1);
 
 /**
- * Antrean convert video yang tidak didukung browser (HEVC/x265 → H.264 480p).
+ * Antrean convert video ke standar x264 480p (H.264 8-bit + audio browser).
  *
- * Scan hanya mendeteksi + menulis penanda antrean (`.queued` di
- * storage/encode). Encode dijalankan lewat admin (POST /admin/transcode)
- * yang menyalakan bin/encode-worker.php di background — satu file pada
- * satu waktu supaya beban CPU server tetap terkendali.
+ * Tombol Convert di admin menjalankan bin/encode-worker.php di background.
+ * Worker pertama memindai SELURUH library (probe tiap file), menulis penanda
+ * antrean (`.queued` di storage/encode) untuk file yang belum standar, lalu
+ * meng-encode satu per satu supaya beban CPU server tetap terkendali.
+ * File yang sudah 480p x264 (atau lebih kecil) dilewati.
  */
 
 function transcode_queue_dir(): string
@@ -19,15 +20,20 @@ function transcode_queue_dir(): string
     return $dir;
 }
 
-function transcode_unsupported_codecs(): array
+/** Tinggi maksimal standar 480p (file dengan tinggi ≤ ini dianggap sudah sesuai). */
+function transcode_max_height(): int
 {
-    $list = config('media.unsupported_codecs');
-    return is_array($list) ? array_map('strtolower', $list) : ['hevc'];
+    return max(90, (int) config('media.transcode_max_height', 480));
 }
 
 function transcode_marker_path(string $path): string
 {
     return transcode_queue_dir() . '/' . md5($path) . '.queued';
+}
+
+function transcode_failed_marker_path(string $path): string
+{
+    return transcode_queue_dir() . '/' . md5($path) . '.failed';
 }
 
 function transcode_is_queued(string $path): bool
@@ -58,26 +64,102 @@ function transcode_ffmpeg_available(): bool
     return $has;
 }
 
-/** Codec stream video pertama, atau null kalau ffprobe tidak bisa membaca. */
-function transcode_video_codec(string $path): ?string
+/**
+ * Probe info video pertama (codec, lebar, tinggi) + audio pertama via ffprobe.
+ * Mengembalikan null kalau ffprobe tidak ada atau file tidak terbaca.
+ */
+function transcode_probe(string $path): ?array
 {
     if (!transcode_ffprobe_available()) {
         return null;
     }
 
     $out = (string) @shell_exec(
-        'ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of csv=p=0 '
-        . escapeshellarg($path) . ' 2>/dev/null'
+        'ffprobe -v error -show_entries stream=codec_type,codec_name,width,height,pix_fmt'
+        . ':stream_disposition=attached_pic '
+        . '-of json ' . escapeshellarg($path) . ' 2>/dev/null'
     );
 
-    $codec = strtolower(trim(explode("\n", $out)[0] ?? ''));
-    return $codec !== '' ? $codec : null;
+    $j = json_decode($out, true);
+    if (!is_array($j)) {
+        return null;
+    }
+
+    $video = null;
+    $audio = null;
+    foreach (($j['streams'] ?? []) as $stream) {
+        $type = (string) ($stream['codec_type'] ?? '');
+        if ($type === 'video' && $video === null) {
+            // Lewati gambar sampul (attached_pic), bukan stream video utama.
+            if ((int) ($stream['disposition']['attached_pic'] ?? 0) === 1) {
+                continue;
+            }
+            $video = [
+                'codec'   => strtolower((string) ($stream['codec_name'] ?? '')),
+                'width'   => (int) ($stream['width'] ?? 0),
+                'height'  => (int) ($stream['height'] ?? 0),
+                'pix_fmt' => strtolower((string) ($stream['pix_fmt'] ?? '')),
+            ];
+        } elseif ($type === 'audio' && $audio === null) {
+            $audio = strtolower((string) ($stream['codec_name'] ?? ''));
+        }
+    }
+
+    if ($video === null || $video['codec'] === '') {
+        return null;
+    }
+
+    return [
+        'video' => $video,
+        'audio' => $audio,
+        'ext'   => strtolower(pathinfo($path, PATHINFO_EXTENSION)),
+    ];
+}
+
+/**
+ * Alasan file harus di-convert, atau null kalau sudah standar
+ * (x264 + tinggi ≤ 480p + 8-bit + audio ramah browser) dan boleh dilewati.
+ */
+function transcode_convert_reason(array $info): ?string
+{
+    $v = $info['video'];
+
+    if ($v['codec'] !== 'h264') {
+        return 'codec ' . $v['codec'];
+    }
+    if ($v['height'] <= 0 || $v['width'] <= 0) {
+        return 'resolusi tidak terbaca';
+    }
+    if ($v['height'] > transcode_max_height()) {
+        return $v['width'] . 'x' . $v['height'] . ' (di atas 480p)';
+    }
+
+    // Container yang tidak bisa diputar browser (AVI, TS, dll) → remux ke MKV.
+    $ext = (string) ($info['ext'] ?? '');
+    if ($ext !== '' && !in_array($ext, ['mp4', 'mkv', 'webm', 'm4v', 'mov'], true)) {
+        return 'container .' . $ext;
+    }
+
+    // 10-bit / 4:2:2 / 4:4:4 tidak diputar browser walau codec-nya h264.
+    $pix = (string) ($v['pix_fmt'] ?? '');
+    if ($pix !== '' && !in_array($pix, ['yuv420p', 'yuvj420p'], true)) {
+        return 'pixel format ' . $pix;
+    }
+
+    // Audio codec non-umum juga bikin playback tidak sempurna.
+    $audio = $info['audio'] ?? null;
+    if ($audio !== null && !in_array($audio, ['aac', 'mp3', 'opus', 'vorbis'], true)) {
+        return 'audio ' . $audio;
+    }
+
+    return null;
 }
 
 /**
  * Deteksi + antrekan saat scan. Mengembalikan true kalau file sedang/masuk
- * antrean convert. Ekstraksi subtitle tidak ikut ditunda: srt dikeluarkan
- * dari file asli sebelum convert supaya tidak ikut hilang.
+ * antrean convert 480p. File yang sudah standar (x264 ≤480p) dilewati.
+ * Ekstraksi subtitle tidak ikut ditunda: srt dikeluarkan dari file asli
+ * sebelum convert supaya tidak ikut hilang.
  */
 function transcode_scan_check(string $path, string $kind, string $label, bool $changed, array &$stats): bool
 {
@@ -93,33 +175,109 @@ function transcode_scan_check(string $path, string $kind, string $label, bool $c
     if (!transcode_ffprobe_available()) {
         static $warned = false;
         if (!$warned) {
-            $stats['warnings'][] = 'ffprobe tidak tersedia — deteksi codec HEVC nonaktif';
+            $stats['warnings'][] = 'ffprobe tidak tersedia — deteksi convert nonaktif';
             $warned = true;
         }
         return false;
     }
 
-    $codec = transcode_video_codec($path);
-    if ($codec === null || !in_array($codec, transcode_unsupported_codecs(), true)) {
+    $info = transcode_probe($path);
+    if ($info === null) {
         return false;
     }
 
-    $marker = transcode_marker_path($path);
-    $data   = json_encode([
-        'path'      => $path,
-        'kind'      => $kind,
-        'codec'     => $codec,
-        'queued_at' => date('c'),
-    ], JSON_UNESCAPED_SLASHES);
+    $reason = transcode_convert_reason($info);
+    if ($reason === null) {
+        return false;
+    }
 
-    if ($data === false || @file_put_contents($marker, $data) === false) {
+    if (!transcode_queue_file($path, $kind, $reason)) {
         $stats['warnings'][] = $label . ': gagal menulis antrean convert';
         return false;
     }
 
-    $stats['warnings'][] = $label . ': format ' . $codec
-        . ' tidak didukung browser — masuk antrean convert 480p (klik tombol Convert di admin)';
+    $stats['warnings'][] = $label . ': ' . $reason
+        . ' — masuk antrean convert 480p (klik tombol Convert di admin)';
     return true;
+}
+
+/** Tulis penanda antrean `.queued` untuk satu file. */
+function transcode_queue_file(string $path, string $kind, string $reason): bool
+{
+    $data = json_encode([
+        'path'      => $path,
+        'kind'      => $kind,
+        'reason'    => $reason,
+        'queued_at' => date('c'),
+    ], JSON_UNESCAPED_SLASHES);
+
+    // Buang sisa kegagalan percobaan sebelumnya.
+    @unlink(transcode_failed_marker_path($path));
+
+    return $data !== false && @file_put_contents(transcode_marker_path($path), $data) !== false;
+}
+
+/**
+ * Pindai SELURUH library dari DB dan antrekan file yang belum standar.
+ * Dipanggil worker tiap kali tombol Convert ditekan supaya file lama yang
+ * tidak berubah (tidak kena deteksi scan) tetap ikut convert.
+ * Mengembalikan laporan jumlah.
+ */
+function transcode_queue_library(?array &$report = null): array
+{
+    $report = [
+        'checked'    => 0,
+        'queued'     => 0,
+        'skipped'    => 0,
+        'missing'    => 0,
+        'unprobeable'=> 0,
+    ];
+
+    if (!transcode_ffprobe_available()) {
+        return $report;
+    }
+
+    $items = [];
+    foreach (['movies' => 'movie', 'episodes' => 'episode'] as $table => $kind) {
+        foreach (db()->query("SELECT file_path FROM {$table}") as $row) {
+            $items[] = [(string) $row['file_path'], $kind];
+        }
+    }
+
+    foreach ($items as [$path, $kind]) {
+        $report['checked']++;
+
+        if (!is_file($path)) {
+            $report['missing']++;
+            continue;
+        }
+
+        if (transcode_is_queued($path)) {
+            $report['queued']++;
+            continue;
+        }
+
+        $info = transcode_probe($path);
+        if ($info === null) {
+            $report['unprobeable']++;
+            continue;
+        }
+
+        $reason = transcode_convert_reason($info);
+        if ($reason === null) {
+            // Sudah standar — buang penanda lama (termasuk sisa kegagalan).
+            @unlink(transcode_marker_path($path));
+            @unlink(transcode_failed_marker_path($path));
+            $report['skipped']++;
+            continue;
+        }
+
+        if (transcode_queue_file($path, $kind, $reason)) {
+            $report['queued']++;
+        }
+    }
+
+    return $report;
 }
 
 function transcode_worker_running(): bool
@@ -148,7 +306,9 @@ function transcode_php_cli(): string
 
 function transcode_spawn_worker(): bool
 {
-    if (transcode_queued_count() === 0 || transcode_worker_running()) {
+    // Worker selalu boleh dijalankan: deteksi library (antrean kosong atau
+    // tidak) dilakukan di dalam worker, bukan di sini.
+    if (transcode_worker_running()) {
         return false;
     }
 

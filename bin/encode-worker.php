@@ -2,10 +2,13 @@
 declare(strict_types=1);
 
 /**
- * Encode worker: ubah video yang tidak didukung browser (HEVC) menjadi
- * H.264 480p + audio ramah browser, lalu ganti filenya di tempat.
+ * Encode worker: konversi video library ke standar x264 480p (H.264 8-bit
+ * + audio ramah browser). Tiap kali dijalankan worker memindai SELURUH
+ * library, mengantrekan file yang belum standar, lalu meng-encode satu per
+ * satu supaya beban CPU server tetap terkendali. File yang sudah 480p x264
+ * (atau lebih kecil) dilewati.
  *
- * Dijalankan di background oleh admin (POST /admin/transcode):
+ * Dijalankan di background oleh admin (POST /admin/transcode {start:true}):
  *
  *   php bin/encode-worker.php
  *
@@ -31,6 +34,13 @@ if ($lock === false || !flock($lock, LOCK_EX | LOCK_NB)) {
     exit(0);
 }
 
+if (!transcode_ffmpeg_available() || !transcode_ffprobe_available()) {
+    worker_log('berhenti: ffmpeg/ffprobe tidak tersedia di server');
+    flock($lock, LOCK_UN);
+    fclose($lock);
+    exit(1);
+}
+
 function worker_log(string $msg): void
 {
     file_put_contents(
@@ -50,9 +60,17 @@ function encode_job(array $job): bool
         return true;
     }
 
-    $codec = transcode_video_codec($src);
-    if ($codec === null || !in_array($codec, transcode_unsupported_codecs(), true)) {
-        worker_log('dilewati (sudah didukung browser): ' . $src);
+    $info = transcode_probe($src);
+    if ($info === null) {
+        // Jangan hapus antrean: biarkan jadi .failed supaya dicoba lagi
+        // pada run berikutnya (ffprobe bisa hilang / file belum selesai upload).
+        worker_log('GAGAL probe: ' . $src);
+        return false;
+    }
+
+    $reason = transcode_convert_reason($info);
+    if ($reason === null) {
+        worker_log('dilewati (sudah standar x264 480p): ' . $src);
         return true;
     }
 
@@ -86,15 +104,31 @@ function encode_job(array $job): bool
         }
     }
 
-    $width = max(320, (int) config('media.transcode_max_width', 1280));
+    // Video sudah x264 ≤480p 8-bit: stream video cukup disalin (mis. hanya
+    // audio/container yang perlu diperbaiki) — jauh lebih hemat CPU.
+    $v = $info['video'];
+    $videoOk = $v['codec'] === 'h264'
+        && $v['height'] > 0 && $v['height'] <= transcode_max_height()
+        && in_array($v['pix_fmt'], ['yuv420p', 'yuvj420p'], true);
 
     $args = ['-map', '0:v:0'];
     $args = array_merge($args, $audioArgs);
     $args = array_merge($args, ['-map', '0:s?', '-c:s', 'copy']);
+
+    if ($videoOk) {
+        $args = array_merge($args, ['-c:v', 'copy']);
+    } else {
+        // Box-fit 854x480: jangan upscale, jaga rasio asli, dimensi genap.
+        $maxW = max(320, (int) config('media.transcode_max_width', 854));
+        $maxH = transcode_max_height();
+        $args = array_merge($args, [
+            '-vf', "scale=w='min({$maxW},iw)':h='min({$maxH},ih)':force_original_aspect_ratio=decrease:force_divisible_by=2",
+            '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '20',
+            '-pix_fmt', 'yuv420p',
+        ]);
+    }
+
     $args = array_merge($args, [
-        '-vf', "scale='min({$width},iw)':-2",
-        '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '20',
-        '-pix_fmt', 'yuv420p',
         '-f', 'matroska',
         $temp,
     ]);
@@ -159,6 +193,20 @@ function encode_job(array $job): bool
 }
 
 worker_log('worker mulai (pid ' . getmypid() . ')');
+
+// Pindai SELURUH library dulu: file yang belum standar (di atas 480p,
+// codec lain, 10-bit, audio aneh) masuk antrean; yang sudah 480p x264
+// atau lebih kecil dilewati.
+$report = [];
+transcode_queue_library($report);
+worker_log(sprintf(
+    'pindai library: %d dicek, %d antre, %d sudah standar, %d hilang, %d gagal probe',
+    $report['checked'],
+    $report['queued'],
+    $report['skipped'],
+    $report['missing'],
+    $report['unprobeable']
+));
 
 $processed = 0;
 $failed    = 0;

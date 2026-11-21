@@ -874,13 +874,13 @@
                 '</div>' +
                 '<div class="scan-box">' +
                 '<h2>Scan library</h2>' +
-                '<p class="muted">Baca ulang folder <code>/diarflix/movie</code> dan <code>/diarflix/series</code>. File baru masuk, yang hilang dihapus dari DB. Poster &amp; deskripsi yang kamu edit tidak disentuh scan. Video x265/HEVC yang tidak didukung browser masuk antrean convert — jalankan lewat tombol di bawah.</p>' +
+                '<p class="muted">Baca ulang folder <code>/diarflix/movie</code> dan <code>/diarflix/series</code>. File baru masuk, yang hilang dihapus dari DB. Poster &amp; deskripsi yang kamu edit tidak disentuh scan. Video yang belum standar (di atas 480p, codec lain, dst) masuk antrean convert — jalankan lewat tombol di bawah.</p>' +
                 '<div class="form-actions">' +
                 '<button class="btn btn-primary" id="scan-btn">Scan sekarang</button>' +
                 '<label class="chk"><input type="checkbox" id="scan-full"> Full (baca ulang semua)</label>' +
                 '</div>' +
                 '<div class="form-actions">' +
-                '<button class="btn" id="transcode-btn">Convert x265 → 480p</button>' +
+                '<button class="btn" id="transcode-btn">Convert semua ke x264 480p</button>' +
                 '<span class="muted" id="transcode-status"></span>' +
                 '</div>' +
                 '<pre class="scan-log" id="scan-log" hidden></pre>' +
@@ -985,8 +985,8 @@
                 return;
             }
             st.textContent = data.queued > 0
-                ? data.queued + ' file HEVC menunggu — klik untuk mulai'
-                : 'Tidak ada file HEVC dalam antrean';
+                ? data.queued + ' file belum standar — klik untuk mulai'
+                : 'Antrean kosong — klik Convert untuk memindai library';
         }
 
         function tcPoll() {
@@ -1004,12 +1004,12 @@
             tcBtn.addEventListener('click', function () {
                 var st = qs('#transcode-status');
                 tcBtn.disabled = true;
-                st.textContent = 'Memeriksa antrean…';
-                api('/admin/transcode', { method: 'POST', body: {} })
+                st.textContent = 'Memulai pindai library…';
+                api('/admin/transcode', { method: 'POST', body: { start: true } })
                     .then(function (data) {
                         showTc(data);
                         if (data.error) toast(data.error, true);
-                        else if (data.spawned) toast('Convert dijalankan');
+                        else if (data.spawned) toast('Convert dijalankan — memindai library…');
                         else if (data.running) toast('Convert sedang berjalan');
                         else toast(data.queued > 0 ? data.queued + ' file dalam antrean' : 'Tidak ada yang perlu di-convert');
                     })
@@ -1019,6 +1019,11 @@
                     })
                     .then(function () { tcBtn.disabled = false; });
             });
+
+            // Muat status antrean saat halaman admin dibuka.
+            api('/admin/transcode', { method: 'POST', body: {} })
+                .then(showTc)
+                .catch(function () {});
         }
 
         var userForm = qs('#user-form');

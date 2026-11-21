@@ -700,21 +700,23 @@ function api_admin_scan(): void
 }
 
 /* -------------------------------------------------------------------------
- * Admin: convert video HEVC → H.264 480p (antrean dari scan)
+ * Admin: convert video ke x264 480p (deteksi seluruh library di worker)
  * ---------------------------------------------------------------------- */
 
 function api_admin_transcode(): void
 {
     require_admin();
 
+    $input   = json_input();
+    $start   = !empty($input['start']);
     $queued  = transcode_queued_count();
     $running = transcode_worker_running();
     $spawned = false;
     $error   = null;
 
-    if ($queued > 0 && !$running && !transcode_ffmpeg_available()) {
-        $error = 'ffmpeg tidak tersedia di server.';
-    } elseif ($queued > 0 && !$running) {
+    if ($start && !$running && (!transcode_ffmpeg_available() || !transcode_ffprobe_available())) {
+        $error = 'ffmpeg/ffprobe tidak tersedia di server.';
+    } elseif ($start && !$running) {
         $spawned = transcode_spawn_worker();
     }
 
