@@ -271,6 +271,8 @@ function serve_subtitle(string $path): void
         $content = substr($content, 3);
     }
 
+    $content = clean_subtitle_text($content);
+
     if (strtolower(pathinfo($real, PATHINFO_EXTENSION)) === 'srt') {
         $content = srt_to_vtt($content);
     } elseif (!str_starts_with(ltrim($content), 'WEBVTT')) {
@@ -293,6 +295,129 @@ function srt_to_vtt(string $srt): string
     $srt = preg_replace('/(\d{2}:\d{2}:\d{2}),(\d{3})/', '$1.$2', $srt) ?? $srt;
 
     return "WEBVTT\n\n" . trim($srt) . "\n";
+}
+
+/**
+ * Bersihkan subtitle bilingual/messy (ASS/SSA inline, tag HTML, baris ganda)
+ * agar hanya menyisakan satu bahasa (prioritas Indonesia) per cue.
+ */
+function clean_subtitle_text(string $text): string
+{
+    $text = str_replace(["\r\n", "\r"], "\n", $text);
+
+    $blocks = preg_split("/\n{2,}/", trim($text));
+    if ($blocks === false) return $text;
+
+    $out = [];
+    foreach ($blocks as $block) {
+        $lines = explode("\n", $block);
+        if ($lines === []) continue;
+
+        $i = 0;
+        if (preg_match('/^\d+$/', trim($lines[0]))) { $i++; }
+        $timeLine = null;
+        if (isset($lines[$i]) && str_contains($lines[$i], '-->')) {
+            $timeLine = trim($lines[$i]);
+            $i++;
+        }
+
+        $textLines = array_slice($lines, $i);
+        $cleanLines = [];
+        foreach ($textLines as $tl) {
+            $tl = clean_subtitle_line($tl);
+            if ($tl !== '') $cleanLines[] = $tl;
+        }
+
+        if ($cleanLines === []) {
+            // cue kosong/tanda musik saja — buang
+            continue;
+        }
+
+        $cleanLines = pick_subtitle_language($cleanLines);
+
+        $cue = [];
+        if ($timeLine !== null) {
+            // srt_to_vtt nanti menambah index jika hilang; pertahankan format
+            // Rebuild: index + time + text
+        }
+        // Keep original index if present in original block
+        $origLines = explode("\n", $block);
+        $prefix = [];
+        $j = 0;
+        if (preg_match('/^\d+$/', trim($origLines[0] ?? ''))) { $prefix[] = trim($origLines[0]); $j++; }
+        if (isset($origLines[$j]) && str_contains($origLines[$j], '-->')) { $prefix[] = trim($origLines[$j]); }
+
+        $out[] = implode("\n", array_merge($prefix, $cleanLines));
+    }
+
+    return implode("\n\n", $out);
+}
+
+function clean_subtitle_line(string $line): string
+{
+    $line = str_replace(['\\N', '\\n', '\\h'], "\n", $line);
+    // Pisahkan konten teks dalam {..} (terjemahan alt) dari override ASS (\an8, \pos, dll)
+    $line = preg_replace_callback('/\{([^}]*)\}/', static function ($m) {
+        $inner = $m[1];
+        if (str_contains($inner, '\\')) {
+            return ''; // override ASS
+        }
+        if (preg_match('/[\p{L}]/u', $inner)) {
+            return "\n" . $inner . "\n"; // teks alt-bahasa, pisahkan baris
+        }
+        return '';
+    }, $line) ?? $line;
+    $line = preg_replace('/<[^>]+>/', '', $line) ?? $line;
+    $line = html_entity_decode($line, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+    $parts = preg_split('/\n+/', $line) ?: [];
+    $parts = array_map(static fn($p) => trim(preg_replace('/\s+/u', ' ', $p) ?? $p), $parts);
+    $parts = array_values(array_filter($parts, static fn($p) => $p !== ''));
+    return implode("\n", $parts);
+}
+
+function pick_subtitle_language(array $lines): array
+{
+    // Heuristik: jika ada baris yang dominan huruf latin / mengandung kata umum ID
+    // dan baris lain lebih "English-heavy", pilih Indonesia.
+    $idHints = ['yang','aku','kamu','dia','tidak','nggak','gak','ini','itu','ada','ke','dari','dengan','untuk','saja','sudah','belum','apa','kenapa','mau','ayo','ya','kok','dong','nih','sih','kan','lah'];
+    $enHints = ['the','you','i','to','and','of','it','is','that','in','my','me','for','what','this','your','we','are','be','with','on'];
+
+    $score = [];
+    foreach ($lines as $idx => $l) {
+        $lower = mb_strtolower($l, 'UTF-8');
+        $words = preg_split('/[^\p{L}]+/u', $lower, -1, PREG_SPLIT_NO_EMPTY) ?: [];
+        $id = 0; $en = 0;
+        foreach ($words as $w) {
+            if (in_array($w, $idHints, true)) $id++;
+            if (in_array($w, $enHints, true)) $en++;
+        }
+        // bonus kalau banyak karakter latin biasa (ID & EN sama2 latin) - pakai hint saja
+        $score[$idx] = ['id' => $id, 'en' => $en, 'text' => $l];
+    }
+
+    $idLines = []; $enLines = []; $other = [];
+    foreach ($score as $idx => $s) {
+        if ($s['id'] > $s['en'] && $s['id'] > 0) $idLines[] = $s['text'];
+        elseif ($s['en'] > $s['id'] && $s['en'] > 0) $enLines[] = $s['text'];
+        else $other[] = $s['text'];
+    }
+
+    if ($idLines !== []) {
+        // kalau ada baris ID, buang baris EN murni (biasanya bilingual) tapi simpan other jika unik
+        $chosen = $idLines;
+        foreach ($other as $o) {
+            if (!in_array($o, $chosen, true)) $chosen[] = $o;
+        }
+        return $chosen;
+    }
+
+    // tidak terdeteksi ID jelas: kalau hanya 1-2 baris, kembalikan apa adanya
+    if (count($lines) <= 2) return $lines;
+
+    // fallback: hapus duplikat baris identik, kembalikan
+    $uniq = [];
+    foreach ($lines as $l) { if (!in_array($l, $uniq, true)) $uniq[] = $l; }
+    return $uniq;
 }
 
 /* -------------------------------------------------------------------------
