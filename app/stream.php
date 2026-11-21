@@ -304,7 +304,6 @@ function srt_to_vtt(string $srt): string
 function clean_subtitle_text(string $text): string
 {
     $text = str_replace(["\r\n", "\r"], "\n", $text);
-
     $blocks = preg_split("/\n{2,}/", trim($text));
     if ($blocks === false) return $text;
 
@@ -315,34 +314,19 @@ function clean_subtitle_text(string $text): string
 
         $i = 0;
         if (preg_match('/^\d+$/', trim($lines[0]))) { $i++; }
-        $timeLine = null;
-        if (isset($lines[$i]) && str_contains($lines[$i], '-->')) {
-            $timeLine = trim($lines[$i]);
-            $i++;
-        }
+        if (isset($lines[$i]) && str_contains($lines[$i], '-->')) { $i++; }
 
-        $textLines = array_slice($lines, $i);
-        // Gabungkan dulu supaya override ASS yang pecah antar baris ikut tertangkap
-        $joined = clean_subtitle_line(implode("\n", $textLines));
+        $joined = clean_subtitle_line(implode("\n", array_slice($lines, $i)));
         $cleanLines = [];
         foreach (preg_split('/\n+/', $joined) ?: [] as $part) {
             $part = trim($part);
             if ($part !== '') $cleanLines[] = $part;
         }
-
-        if ($cleanLines === []) {
-            // cue kosong/tanda musik saja — buang
-            continue;
-        }
+        if ($cleanLines === []) continue;
 
         $cleanLines = pick_subtitle_language($cleanLines);
+        if ($cleanLines === []) continue;
 
-        $cue = [];
-        if ($timeLine !== null) {
-            // srt_to_vtt nanti menambah index jika hilang; pertahankan format
-            // Rebuild: index + time + text
-        }
-        // Keep original index if present in original block
         $origLines = explode("\n", $block);
         $prefix = [];
         $j = 0;
@@ -352,7 +336,33 @@ function clean_subtitle_text(string $text): string
         $out[] = implode("\n", array_merge($prefix, $cleanLines));
     }
 
-    return implode("\n\n", $out);
+    // Dedup cue berurutan yang waktu & teksnya identik (karaoke ASS sering pecah)
+    $dedup = [];
+    $prevKey = null;
+    foreach ($out as $cue) {
+        $cLines = explode("\n", $cue);
+        $ci = 0;
+        if (preg_match('/^\d+$/', trim($cLines[0] ?? ''))) $ci++;
+        $time = trim($cLines[$ci] ?? '');
+        $body = trim(implode("\n", array_slice($cLines, $ci + 1)));
+        $key = $time . '|' . $body;
+        if ($key === $prevKey) continue;
+        $prevKey = $key;
+        $dedup[] = $cue;
+    }
+
+    // Renumber index
+    $final = [];
+    $n = 1;
+    foreach ($dedup as $cue) {
+        $cLines = explode("\n", $cue);
+        if (preg_match('/^\d+$/', trim($cLines[0] ?? ''))) $cLines[0] = (string) $n;
+        else array_unshift($cLines, (string) $n);
+        $final[] = implode("\n", $cLines);
+        $n++;
+    }
+
+    return implode("\n\n", $final);
 }
 
 function clean_subtitle_line(string $line): string
