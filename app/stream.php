@@ -382,8 +382,8 @@ function pick_subtitle_language(array $lines): array
 {
     // Heuristik: jika ada baris yang dominan huruf latin / mengandung kata umum ID
     // dan baris lain lebih "English-heavy", pilih Indonesia.
-    $idHints = ['yang','aku','kamu','dia','tidak','nggak','gak','ini','itu','ada','ke','dari','dengan','untuk','saja','sudah','belum','apa','kenapa','mau','ayo','ya','kok','dong','nih','sih','kan','lah'];
-    $enHints = ['the','you','i','to','and','of','it','is','that','in','my','me','for','what','this','your','we','are','be','with','on'];
+    $idHints = ['yang','aku','kamu','dia','tidak','nggak','gak','ga','ini','itu','ada','ke','dari','dengan','untuk','saja','sudah','udah','belum','apa','kenapa','mau','ayo','ya','kok','dong','nih','sih','kan','lah','lagi','dua','tiga','empat','lima','enam','tujuh','delapan','sembilan','sepuluh','puluh','menit','detik','jam','hari','besok','nanti','tadi','juga','sama','kalau','kalo','bisa','jadi','tapi','karena','dan','atau','di','pun','sini','sana','itu','mereka','kita','kami','seorang','sendiri','rumah','pulang','pergi','makan','lihat','datang'];
+    $enHints = ['the','you','i','to','and','of','it','is','that','in','my','me','for','what','this','your','we','are','be','with','on','a','an','was','were','have','had','do','did','will','would','can','could','but','not','so','if','at','by','from','as','or','up','out','just','now','all','no','there','here','when','how','she','he','they','them','more','twenty','minutes','minute','come','over','play','hide','seek','wanna','want','go','going','home','right','after','school','girl','ends','alone','get','got','one','two','tomorrow'];
 
     $score = [];
     foreach ($lines as $idx => $l) {
@@ -409,14 +409,27 @@ function pick_subtitle_language(array $lines): array
         return $idLines;
     }
 
-    // Tidak ada sinyal ID jelas: buang baris EN murni jika ada baris other
     if ($other !== [] && $enLines !== []) {
         return $other;
     }
 
     $uniq = [];
     foreach ($lines as $l) { if (!in_array($l, $uniq, true)) $uniq[] = $l; }
-    return $uniq;
+    // Heuristik akhir: jika baris dominan non-ASCII (mis. Jepang/Korea/Thai)
+    // dan tidak ada sinyal EN kuat, buang saja daripada tampil "berantakan".
+    $filtered = [];
+    foreach ($uniq as $l) {
+        $latin = preg_match_all('/[A-Za-z]/u', $l);
+        $nonAscii = preg_match_all('/[^\x00-\x7F]/u', $l);
+        $total = max(1, mb_strlen($l));
+        $enScore = 0; $lower = mb_strtolower($l, 'UTF-8');
+        foreach (preg_split('/[^\p{L}]+/u', $lower, -1, PREG_SPLIT_NO_EMPTY) ?: [] as $w) {
+            if (in_array($w, $enHints, true)) $enScore++;
+        }
+        if ($nonAscii > $latin && $enScore === 0) continue;
+        $filtered[] = $l;
+    }
+    return $filtered !== [] ? $filtered : $uniq;
 }
 
 /* -------------------------------------------------------------------------
