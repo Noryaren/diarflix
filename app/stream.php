@@ -325,7 +325,11 @@ function clean_subtitle_text(string $text): string
         $cleanLines = [];
         foreach ($textLines as $tl) {
             $tl = clean_subtitle_line($tl);
-            if ($tl !== '') $cleanLines[] = $tl;
+            if ($tl === '') continue;
+            foreach (preg_split('/\n+/', $tl) ?: [] as $part) {
+                $part = trim($part);
+                if ($part !== '') $cleanLines[] = $part;
+            }
         }
 
         if ($cleanLines === []) {
