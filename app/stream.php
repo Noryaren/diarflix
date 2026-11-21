@@ -369,9 +369,10 @@ function clean_subtitle_line(string $line): string
     }, $line) ?? $line;
     $line = preg_replace('/<[^>]+>/', '', $line) ?? $line;
     $line = html_entity_decode($line, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+    $line = str_replace(['{', '}'], '', $line); // sisa brace ASS bocor
     $parts = preg_split('/\n+/', $line) ?: [];
     $parts = array_map(static fn($p) => trim(preg_replace('/\s+/u', ' ', $p) ?? $p), $parts);
-    $parts = array_values(array_filter($parts, static fn($p) => $p !== ''));
+    $parts = array_values(array_filter($parts, static fn($p) => $p !== '' && !preg_match('/^[\p{P}\p{S}\s]+$/u', $p)));
     return implode("\n", $parts);
 }
 
@@ -403,18 +404,14 @@ function pick_subtitle_language(array $lines): array
     }
 
     if ($idLines !== []) {
-        // kalau ada baris ID, buang baris EN murni (biasanya bilingual) tapi simpan other jika unik
-        $chosen = $idLines;
-        foreach ($other as $o) {
-            if (!in_array($o, $chosen, true)) $chosen[] = $o;
-        }
-        return $chosen;
+        return $idLines;
     }
 
-    // tidak terdeteksi ID jelas: kalau hanya 1-2 baris, kembalikan apa adanya
-    if (count($lines) <= 2) return $lines;
+    // Tidak ada sinyal ID jelas: buang baris EN murni jika ada baris other
+    if ($other !== [] && $enLines !== []) {
+        return $other;
+    }
 
-    // fallback: hapus duplikat baris identik, kembalikan
     $uniq = [];
     foreach ($lines as $l) { if (!in_array($l, $uniq, true)) $uniq[] = $l; }
     return $uniq;
