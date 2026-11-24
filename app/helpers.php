@@ -26,8 +26,6 @@ function config(?string $key = null, mixed $default = null): mixed
                 'video_extensions'    => ['mp4', 'mkv', 'webm', 'm4v', 'mov', 'avi', 'ts'],
                 'subtitle_extensions' => ['srt', 'vtt'],
                 'folder_posters'      => ['poster.jpg', 'poster.png', 'cover.jpg', 'cover.png', 'folder.jpg', 'front.jpg', 'movie.jpg'],
-                'transcode_max_width'  => 854,
-                'transcode_max_height' => 480,
             ],
         ];
 

@@ -27,14 +27,14 @@ bebas kamu pakai, ubah, dan host untuk kebutuhan pribadi selamanya.
 - **Superadmin** — scan library dari web, CRUD user, edit deskripsi/judul/tahun/
   genre, upload poster (opsional — tanpa poster tetap tampil inisial judul)
 - **Direct play** — streaming via HTTP Range (seek mulus), tanpa transcode saat
-  nonton; ffmpeg hanya untuk ekstraksi subtitle & tombol Convert
+  nonton; ffmpeg hanya untuk ekstraksi subtitle
 
 ## Kebutuhan
 
 - PHP 8.5-FPM (8.1+ juga jalan) dengan ekstensi PDO MySQL
 - MariaDB/MySQL (bisa dari container Docker)
 - Caddy (atau web server apa pun yang bisa `php_fastcgi`)
-- ffmpeg + ffprobe (opsional — ekstraksi subtitle & fitur Convert admin)
+- ffmpeg + ffprobe (opsional — ekstraksi subtitle)
 - Penyimpanan untuk file media (MP4 H.264 paling kompatibel dengan browser)
 
 ## Instalasi singkat
@@ -89,7 +89,7 @@ Pastikan hostname tersebut juga terdaftar di Cloudflare Tunnel.
 ## Struktur proyek
 
 ```
-bin/          create-user.php, scan.php, encode-worker.php (CLI)
+bin/          create-user.php, scan.php (CLI)
 config/       config.example.php → salin jadi config.php
 database/     schema.sql
 deploy/       Caddyfile.example, contoh tuning PHP-FPM
@@ -102,10 +102,7 @@ storage/      jwt.secret, covers/ (poster upload)
 
 - **Direct play saat nonton.** File diserve apa adanya dari disk (Range request,
   seek mulus) — tidak ada transcode di jalur streaming. ffmpeg dipakai terpisah
-  untuk ekstraksi subtitle dan tombol **Convert** di admin: memindai seluruh
-  library lalu mengonversi video yang belum standar (di atas 480p, codec lain,
-  pixel format 10-bit, container aneh) ke **x264 480p + audio ramah browser**.
-  File yang sudah 480p x264 atau lebih kecil dilewati.
+  untuk ekstraksi subtitle embedded ke sidecar SRT.
 - **Tanpa session cookie** — auth sepenuhnya JWT, aman dari cookie-rewriting CDN.
 - **Ringan** — tanpa daemon tambahan: cukup PHP-FPM + MariaDB yang memang sudah
   ada di server; proses scan dijalankan on-demand lewat `exec`.

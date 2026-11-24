@@ -26,8 +26,5 @@ return [
         'movie_path'  => '/diarflix/movie',
         // Folder serial: /diarflix/series/Judul/Season 1/...S01E01.mkv
         'series_path' => '/diarflix/series',
-        // Standar tombol Convert admin (opsional; sudah ada di default)
-        // 'transcode_max_width'  => 854,
-        // 'transcode_max_height' => 480,
     ],
 ];
