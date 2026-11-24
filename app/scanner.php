@@ -8,8 +8,6 @@ declare(strict_types=1);
  * Series : /diarflix/series/Judul/Season 1/Judul.S01E01.mkv  (SxxEyy required)
  */
 
-require_once __DIR__ . '/transcode.php';
-
 function scan_library(bool $full = false, ?callable $progress = null): array
 {
     $stats = [
@@ -97,7 +95,6 @@ function scan_movies(array &$stats, ?callable $progress): void
             $before       = $stats['movies_added'] + $stats['movies_updated'];
             upsert_movie($video, $title, $year, $folderPoster, $stats);
             $changed = ($stats['movies_added'] + $stats['movies_updated']) > $before;
-            transcode_scan_check($video, 'movie', $entry, $changed, $stats);
             extract_embedded_subtitles($video, $stats, $changed);
         } elseif (is_file($full) && in_array(strtolower(pathinfo($entry, PATHINFO_EXTENSION)), $videoExt, true)) {
             [$title, $year] = parse_title_year(pathinfo($entry, PATHINFO_FILENAME));
@@ -106,7 +103,6 @@ function scan_movies(array &$stats, ?callable $progress): void
             $before = $stats['movies_added'] + $stats['movies_updated'];
             upsert_movie($full, $title, $year, null, $stats);
             $changed = ($stats['movies_added'] + $stats['movies_updated']) > $before;
-            transcode_scan_check($full, 'movie', $entry, $changed, $stats);
             extract_embedded_subtitles($full, $stats, $changed);
         }
 
@@ -237,7 +233,6 @@ function scan_series(array &$stats, ?callable $progress): void
             $before  = $stats['episodes_added'] + $stats['episodes_updated'];
             upsert_episode($seriesId, $seasonNo, $epNo, $epTitle, $path, $stats);
             $changed = ($stats['episodes_added'] + $stats['episodes_updated']) > $before;
-            transcode_scan_check($path, 'episode', $entry . '/' . $rel, $changed, $stats);
             extract_embedded_subtitles($path, $stats, $changed);
 
             if ($progress !== null && (count($seen) % 50) === 0) {
@@ -267,8 +262,10 @@ function upsert_series(string $homePath, string $title, ?int $year, ?string $fol
     $row = $stmt->fetch();
 
     if ($row) {
-        $upd = db()->prepare('UPDATE series SET title = ?, year = ?, folder_poster = ? WHERE id = ?');
-        $upd->execute([$title, $year, $folderPoster, (int) $row['id']]);
+        // Seperti film: jangan timpa judul/tahun yang sudah diedit admin —
+        // nilai dari nama folder hanya dipakai saat insert (baris baru).
+        $upd = db()->prepare('UPDATE series SET folder_poster = ? WHERE id = ?');
+        $upd->execute([$folderPoster, (int) $row['id']]);
         return (int) $row['id'];
     }
 
